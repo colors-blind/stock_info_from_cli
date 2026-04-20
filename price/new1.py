@@ -1,5 +1,8 @@
 import requests
+import subprocess
+import schedule
 from time import sleep
+from datetime import datetime, timedelta
 
 BASE_URL = 'https://hq.sinajs.cn/list={}'
 CODE_FILE = r'code.txt'
@@ -11,6 +14,41 @@ HEADERS = {
     "Content-Type": "application/javascript; charset=GB18030",
     "Referer": "https://finance.sina.com.cn"
 }
+
+
+def get_fortune():
+    """调用 fortune-zh 命令获取名言"""
+    try:
+        result = subprocess.run(
+            ['fortune-zh'],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        return result.stdout.strip()
+    except Exception as e:
+        print(f'[FORTUNE ERROR] {e}')
+        return ''
+
+
+def is_trading_time():
+    """检查是否在交易时间内"""
+    now = datetime.now()
+    weekday = now.weekday()
+    
+    # 周六周日不运行
+    if weekday >= 5:
+        return False
+    
+    # 转换为时分格式，方便比较
+    current_time = now.hour * 100 + now.minute
+    
+    # 上午: 9:00 - 11:30 (900-1130)
+    # 下午: 13:00 - 15:00 (1300-1500)
+    if (900 <= current_time <= 1130) or (1300 <= current_time <= 1500):
+        return True
+    
+    return False
 
 
 def read_codes():
@@ -95,29 +133,66 @@ def format_line_info(d):
     )
 
 
+def run_task():
+    """执行一次任务：输出名言，然后获取股票信息"""
+    # 检查是否在交易时间
+    if not is_trading_time():
+        now = datetime.now()
+        print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 当前不在交易时间，跳过执行")
+        return
+    
+    try:
+        # 输出名言
+        print('=' * 60)
+        fortune = get_fortune()
+        if fortune:
+            print(f"【每日名言】\n{fortune}")
+            print('=' * 60)
+        
+        # 获取股票信息
+        codes = read_codes()
+        raw = get_price_detail(codes)
+
+        lines = raw.split('\n')
+        stocks = []
+
+        for line in lines:
+            data = parse_line_data(line)
+            if data:
+                stocks.append(data)
+
+        stocks.sort(key=lambda x: x['change_pct'], reverse=True)
+
+        now = datetime.now()
+        print(f"【股票信息 - {now.strftime('%Y-%m-%d %H:%M:%S')}】")
+        for s in stocks:
+            print(format_line_info(s))
+        print('=' * 60)
+        print()  # 空行分隔
+
+    except Exception as e:
+        print('[MAIN ERROR]', e)
+
+
 def main():
-        try:
-            codes = read_codes()
-            raw = get_price_detail(codes)
-
-            lines = raw.split('\n')
-            stocks = []
-
-            for line in lines:
-                data = parse_line_data(line)
-                if data:
-                    stocks.append(data)
-
-            stocks.sort(key=lambda x: x['change_pct'], reverse=True)
-
-            print('=' * 60)
-            for s in stocks:
-                print(format_line_info(s))
-            print('=' * 60)
-
-
-        except Exception as e:
-            print('[MAIN ERROR]', e)
+    # 立即执行一次
+    run_task()
+    
+    # 设置定时任务，每3分钟执行一次
+    schedule.every(3).minutes.do(run_task)
+    
+    print("定时任务已启动，每3分钟执行一次，仅在交易时间运行")
+    print("交易时间：周一至周五 9:00-11:30, 13:00-15:00")
+    print("按 Ctrl+C 停止运行")
+    print()
+    
+    # 循环执行定时任务
+    try:
+        while True:
+            schedule.run_pending()
+            sleep(1)  # 每秒检查一次是否有任务需要执行
+    except KeyboardInterrupt:
+        print("\n程序已停止")
 
 
 if __name__ == '__main__':
